@@ -1,7 +1,10 @@
 @echo off
-REM Set SSL certificate path
-set SSL_CERT_FILE=C:\Android_Projects\GoogleCalendar_toExcel\venv\Lib\site-packages\certifi\cacert.pem
-set REQUESTS_CA_BUNDLE=C:\Android_Projects\GoogleCalendar_toExcel\venv\Lib\site-packages\certifi\cacert.pem
+echo ========================================
+echo Google Calendar to CSV Export
+echo ========================================
+echo.
+echo Starting the app...
+echo.
 
 REM Activate virtual environment
 call venv\Scripts\activate.bat

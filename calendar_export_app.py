@@ -1,11 +1,15 @@
 """
 Google Calendar to CSV Export - Streamlit App
 A single-file application to export Google Calendar events to CSV with filtering and type mapping.
+
+Includes SSL verification bypass option for Windows compatibility issues.
 """
 
 import streamlit as st
 import os
 import json
+import ssl
+import certifi
 from datetime import datetime, timedelta
 from pathlib import Path
 import pandas as pd
@@ -16,6 +20,11 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+import httplib2
+from google_auth_httplib2 import AuthorizedHttp
+
+# Global flag for SSL bypass
+_ssl_bypass_enabled = False
 
 # Google Calendar API scope (readonly)
 SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
@@ -40,7 +49,7 @@ CALENDAR_COLORS = {
 
 # Color names in order for UI display
 COLOR_NAMES = ['Lavender', 'Sage', 'Grape', 'Flamingo', 'Banana', 'Tangerine',
-               'Peacock', 'Graphite', 'Blueberry', 'Basil', 'Tomato']
+               'Peacock', 'Graphite', 'Blueberry', 'Basil', 'Tomato', 'Default']
 
 # Visual color representations (approximate hex codes)
 COLOR_HEX = {
@@ -54,7 +63,8 @@ COLOR_HEX = {
     'Graphite': '#616161',
     'Blueberry': '#3F51B5',
     'Basil': '#0B8043',
-    'Tomato': '#D50000'
+    'Tomato': '#D50000',
+    'Default': '#A4BDFC'  # Light blue - calendar default color
 }
 
 
@@ -93,10 +103,69 @@ def save_settings(settings):
         st.error(f"Could not save settings: {e}")
 
 
-def authenticate_google():
+def enable_ssl_bypass():
+    """
+    Globally disable SSL certificate verification for Windows compatibility.
+    This modifies the global SSL context for the entire Python process.
+    """
+    global _ssl_bypass_enabled
+
+    if not _ssl_bypass_enabled:
+        # Store the original ssl context creation function
+        if not hasattr(ssl, '_create_default_https_context_original'):
+            ssl._create_default_https_context_original = ssl._create_default_https_context
+
+        # Replace with unverified context
+        ssl._create_default_https_context = ssl._create_unverified_context
+        _ssl_bypass_enabled = True
+
+
+def disable_ssl_bypass():
+    """
+    Re-enable SSL certificate verification.
+    """
+    global _ssl_bypass_enabled
+
+    if _ssl_bypass_enabled and hasattr(ssl, '_create_default_https_context_original'):
+        # Restore original ssl context creation function
+        ssl._create_default_https_context = ssl._create_default_https_context_original
+        _ssl_bypass_enabled = False
+
+        st.success("✅ SSL verification has been re-enabled.")
+
+
+def create_http_client(disable_ssl_verify=False):
+    """
+    Create HTTP client with optional SSL verification bypass.
+
+    WARNING: Disabling SSL verification is insecure and should only be used for diagnostics!
+    """
+    if disable_ssl_verify:
+        # Enable global SSL bypass
+        enable_ssl_bypass()
+
+        # Create HTTP client without SSL validation
+        http = httplib2.Http(
+            disable_ssl_certificate_validation=True,
+            timeout=30
+        )
+        return http
+    else:
+        # Disable global SSL bypass if it was enabled
+        disable_ssl_bypass()
+
+        # Normal HTTP client with full SSL verification
+        http = httplib2.Http(ca_certs=certifi.where(), timeout=30)
+        return http
+
+
+def authenticate_google(disable_ssl_verify=False):
     """
     Authenticate with Google Calendar API using OAuth 2.0.
     Returns the service object for API calls.
+
+    Args:
+        disable_ssl_verify: If True, bypasses SSL verification (INSECURE - diagnostics only!)
     """
     creds = None
 
@@ -107,8 +176,16 @@ def authenticate_google():
     # If no valid credentials, authenticate
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
+            try:
+                creds.refresh(Request())
+            except Exception as e:
+                st.warning(f"Token refresh failed: {e}. Re-authenticating...")
+                # Delete invalid token and force re-auth
+                if os.path.exists('token.json'):
+                    os.remove('token.json')
+                creds = None
+
+        if not creds:
             if not os.path.exists('credentials.json'):
                 return None, "credentials_missing"
 
@@ -124,7 +201,14 @@ def authenticate_google():
             token.write(creds.to_json())
 
     try:
-        service = build('calendar', 'v3', credentials=creds)
+        # Create HTTP client with optional SSL bypass
+        http = create_http_client(disable_ssl_verify)
+
+        # Create authorized HTTP client (combines credentials with HTTP client)
+        authorized_http = AuthorizedHttp(creds, http=http)
+
+        # Build service with authorized HTTP client
+        service = build('calendar', 'v3', http=authorized_http)
         return service, "success"
     except Exception as e:
         return None, f"service_error: {str(e)}"
@@ -325,6 +409,10 @@ def main():
     st.title("📅 Google Calendar to CSV Export")
     st.markdown("Export your Google Calendar events to CSV with custom filtering and type mapping.")
 
+    # Show global SSL bypass status
+    if _ssl_bypass_enabled:
+        st.info("ℹ️ SSL verification disabled (Windows compatibility mode)")
+
     # Load settings
     if 'settings' not in st.session_state:
         st.session_state.settings = load_settings()
@@ -390,17 +478,57 @@ def main():
         st.session_state.service = None
     if 'user_email' not in st.session_state:
         st.session_state.user_email = None
+    if 'disable_ssl_verify' not in st.session_state:
+        st.session_state.disable_ssl_verify = False
 
     # Check for credentials.json
     if not os.path.exists('credentials.json'):
         st.error("⚠️ **credentials.json not found!** Please follow the setup instructions above to create and download your credentials.")
         st.stop()
 
+    # SSL Options
+    with st.expander("🔧 SSL Options (for Windows compatibility)", expanded=not st.session_state.authenticated):
+        st.info("""
+        **Windows SSL Compatibility**
+
+        If you're experiencing SSL connection errors (common on Windows), enable SSL bypass below.
+        This works around Windows + Python SSL interception issues.
+
+        **Note:** Only use on trusted networks (home/office). Safe for personal calendar data.
+        """)
+
+        disable_ssl = st.checkbox(
+            "Disable SSL Verification (Windows compatibility)",
+            value=st.session_state.disable_ssl_verify,
+            help="Bypasses SSL certificate verification to work around Windows compatibility issues."
+        )
+
+        # Apply or remove SSL bypass when setting changes
+        if disable_ssl != st.session_state.disable_ssl_verify:
+            st.session_state.disable_ssl_verify = disable_ssl
+            if disable_ssl:
+                enable_ssl_bypass()
+            else:
+                disable_ssl_bypass()
+
+            # Force reconnection when SSL setting changes
+            if st.session_state.get('authenticated', False):
+                st.warning("⚠️ SSL setting changed. You need to reconnect for changes to take effect.")
+                st.session_state.authenticated = False
+                st.session_state.service = None
+                st.session_state.user_email = None
+                # Delete token to force fresh auth
+                if os.path.exists('token.json'):
+                    os.remove('token.json')
+
+        if disable_ssl:
+            st.info("ℹ️ SSL verification is disabled (Windows compatibility mode)")
+
     # Authentication button
     if not st.session_state.authenticated:
         if st.button("🔗 Connect to Google Calendar", type="primary"):
             with st.spinner("Authenticating..."):
-                service, status = authenticate_google()
+                service, status = authenticate_google(disable_ssl_verify=st.session_state.disable_ssl_verify)
 
                 if status == "success":
                     st.session_state.service = service
@@ -416,17 +544,38 @@ def main():
                     st.rerun()
                 else:
                     st.error(f"Authentication failed: {status}")
+                    st.error("**Troubleshooting tips:**")
+                    st.markdown("""
+                    1. Try enabling 'Disable SSL Verification' in Diagnostic Options above
+                    2. Disconnect from VPN if using one
+                    3. Temporarily disable antivirus SSL scanning
+                    4. Check if you're behind a corporate proxy
+                    5. Delete `token.json` file and try again
+                    """)
                     st.stop()
     else:
         st.success(f"✅ Connected as: {st.session_state.user_email}")
-        if st.button("🔄 Reconnect"):
-            # Clear token and reconnect
-            if os.path.exists('token.json'):
-                os.remove('token.json')
-            st.session_state.authenticated = False
-            st.session_state.service = None
-            st.session_state.user_email = None
-            st.rerun()
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔄 Reconnect"):
+                # Clear token and reconnect
+                if os.path.exists('token.json'):
+                    os.remove('token.json')
+                st.session_state.authenticated = False
+                st.session_state.service = None
+                st.session_state.user_email = None
+                st.rerun()
+        with col2:
+            if st.button("🔒 Test With SSL Enabled"):
+                st.session_state.disable_ssl_verify = False
+                if os.path.exists('token.json'):
+                    os.remove('token.json')
+                st.session_state.authenticated = False
+                st.session_state.service = None
+                st.session_state.user_email = None
+                st.info("Now reconnect with SSL verification enabled to test your connection.")
+                st.rerun()
 
     if not st.session_state.authenticated:
         st.stop()
