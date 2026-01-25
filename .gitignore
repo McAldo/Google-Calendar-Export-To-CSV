@@ -1,0 +1,31 @@
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# Google Calendar Credentials & Tokens
+credentials.json
+token.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Export files
+*.csv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

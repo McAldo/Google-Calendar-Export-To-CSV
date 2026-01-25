@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m venv:*)",
+      "Bash(git init:*)",
+      "Bash(venvScriptsactivate)",
+      "Bash(pip:*)",
+      "Bash(source venv/Scripts/activate)",
+      "Bash(git add:*)"
+    ]
+  }
+}
