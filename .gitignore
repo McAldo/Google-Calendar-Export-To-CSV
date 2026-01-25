@@ -7,6 +7,9 @@ ENV/
 credentials.json
 token.json
 
+# User Settings (optional - comment out if you want to commit your preferences)
+app_settings.json
+
 # Python
 __pycache__/
 *.py[cod]

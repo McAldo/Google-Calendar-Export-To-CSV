@@ -1,11 +1,16 @@
 """
-Google Calendar to CSV Export - Streamlit App
+Google Calendar to CSV Export - Streamlit App (DIAGNOSTIC VERSION)
 A single-file application to export Google Calendar events to CSV with filtering and type mapping.
+
+**WARNING**: This diagnostic version includes SSL verification bypass options for troubleshooting.
+Only use this version for diagnosing connectivity issues. Do not use in production.
 """
 
 import streamlit as st
 import os
 import json
+import ssl
+import certifi
 from datetime import datetime, timedelta
 from pathlib import Path
 import pandas as pd
@@ -16,6 +21,11 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+import httplib2
+from google_auth_httplib2 import AuthorizedHttp
+
+# Global flag for SSL bypass
+_ssl_bypass_enabled = False
 
 # Google Calendar API scope (readonly)
 SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
@@ -93,10 +103,73 @@ def save_settings(settings):
         st.error(f"Could not save settings: {e}")
 
 
-def authenticate_google():
+def enable_ssl_bypass():
+    """
+    Globally disable SSL certificate verification.
+
+    WARNING: This is EXTREMELY insecure and should ONLY be used for diagnostics!
+    This modifies the global SSL context for the entire Python process.
+    """
+    global _ssl_bypass_enabled
+
+    if not _ssl_bypass_enabled:
+        # Store the original ssl context creation function
+        if not hasattr(ssl, '_create_default_https_context_original'):
+            ssl._create_default_https_context_original = ssl._create_default_https_context
+
+        # Replace with unverified context
+        ssl._create_default_https_context = ssl._create_unverified_context
+        _ssl_bypass_enabled = True
+
+        st.warning("⚠️ **GLOBAL SSL verification is DISABLED** - This is insecure! Only for diagnostics.")
+
+
+def disable_ssl_bypass():
+    """
+    Re-enable SSL certificate verification.
+    """
+    global _ssl_bypass_enabled
+
+    if _ssl_bypass_enabled and hasattr(ssl, '_create_default_https_context_original'):
+        # Restore original ssl context creation function
+        ssl._create_default_https_context = ssl._create_default_https_context_original
+        _ssl_bypass_enabled = False
+
+        st.success("✅ SSL verification has been re-enabled.")
+
+
+def create_http_client(disable_ssl_verify=False):
+    """
+    Create HTTP client with optional SSL verification bypass.
+
+    WARNING: Disabling SSL verification is insecure and should only be used for diagnostics!
+    """
+    if disable_ssl_verify:
+        # Enable global SSL bypass
+        enable_ssl_bypass()
+
+        # Create HTTP client without SSL validation
+        http = httplib2.Http(
+            disable_ssl_certificate_validation=True,
+            timeout=30
+        )
+        return http
+    else:
+        # Disable global SSL bypass if it was enabled
+        disable_ssl_bypass()
+
+        # Normal HTTP client with full SSL verification
+        http = httplib2.Http(ca_certs=certifi.where(), timeout=30)
+        return http
+
+
+def authenticate_google(disable_ssl_verify=False):
     """
     Authenticate with Google Calendar API using OAuth 2.0.
     Returns the service object for API calls.
+
+    Args:
+        disable_ssl_verify: If True, bypasses SSL verification (INSECURE - diagnostics only!)
     """
     creds = None
 
@@ -107,8 +180,16 @@ def authenticate_google():
     # If no valid credentials, authenticate
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
+            try:
+                creds.refresh(Request())
+            except Exception as e:
+                st.warning(f"Token refresh failed: {e}. Re-authenticating...")
+                # Delete invalid token and force re-auth
+                if os.path.exists('token.json'):
+                    os.remove('token.json')
+                creds = None
+
+        if not creds:
             if not os.path.exists('credentials.json'):
                 return None, "credentials_missing"
 
@@ -124,7 +205,14 @@ def authenticate_google():
             token.write(creds.to_json())
 
     try:
-        service = build('calendar', 'v3', credentials=creds)
+        # Create HTTP client with optional SSL bypass
+        http = create_http_client(disable_ssl_verify)
+
+        # Create authorized HTTP client (combines credentials with HTTP client)
+        authorized_http = AuthorizedHttp(creds, http=http)
+
+        # Build service with authorized HTTP client
+        service = build('calendar', 'v3', http=authorized_http)
         return service, "success"
     except Exception as e:
         return None, f"service_error: {str(e)}"
@@ -325,6 +413,10 @@ def main():
     st.title("📅 Google Calendar to CSV Export")
     st.markdown("Export your Google Calendar events to CSV with custom filtering and type mapping.")
 
+    # Show global SSL bypass status prominently
+    if _ssl_bypass_enabled:
+        st.error("🚨 **GLOBAL SSL BYPASS ACTIVE** - All SSL verification is disabled! Use only for diagnostics.")
+
     # Load settings
     if 'settings' not in st.session_state:
         st.session_state.settings = load_settings()
@@ -383,6 +475,9 @@ def main():
     # Section B: Authentication
     st.header("🔐 Step 1: Authentication")
 
+    # DIAGNOSTIC MODE WARNING
+    st.error("⚠️ **DIAGNOSTIC VERSION** - This version includes SSL bypass options for troubleshooting only!")
+
     # Initialize session state
     if 'authenticated' not in st.session_state:
         st.session_state.authenticated = False
@@ -390,17 +485,64 @@ def main():
         st.session_state.service = None
     if 'user_email' not in st.session_state:
         st.session_state.user_email = None
+    if 'disable_ssl_verify' not in st.session_state:
+        st.session_state.disable_ssl_verify = False
 
     # Check for credentials.json
     if not os.path.exists('credentials.json'):
         st.error("⚠️ **credentials.json not found!** Please follow the setup instructions above to create and download your credentials.")
         st.stop()
 
+    # Diagnostic Mode Toggle
+    with st.expander("🔧 Diagnostic Options (Troubleshooting SSL Errors)", expanded=not st.session_state.authenticated):
+        st.warning("""
+        **⚠️ WARNING: Security Risk!**
+
+        If you're experiencing SSL errors, you can temporarily disable SSL verification to diagnose the issue.
+        This is **INSECURE** and should only be used for testing!
+
+        Common causes of SSL errors:
+        - Antivirus software intercepting SSL connections
+        - Corporate proxy/firewall
+        - VPN interference
+        - Outdated system certificates
+
+        **Try this ONLY if you trust your network and are troubleshooting connectivity issues.**
+        """)
+
+        disable_ssl = st.checkbox(
+            "🚨 Disable SSL Verification (INSECURE - Diagnostics Only)",
+            value=st.session_state.disable_ssl_verify,
+            help="Bypasses SSL certificate verification. Only use this temporarily to identify SSL issues."
+        )
+
+        # Apply or remove SSL bypass when setting changes
+        if disable_ssl != st.session_state.disable_ssl_verify:
+            st.session_state.disable_ssl_verify = disable_ssl
+            if disable_ssl:
+                enable_ssl_bypass()
+            else:
+                disable_ssl_bypass()
+
+            # Force reconnection when SSL setting changes
+            if st.session_state.get('authenticated', False):
+                st.warning("⚠️ SSL setting changed. You need to reconnect for changes to take effect.")
+                st.session_state.authenticated = False
+                st.session_state.service = None
+                st.session_state.user_email = None
+                # Delete token to force fresh auth
+                if os.path.exists('token.json'):
+                    os.remove('token.json')
+
+        if disable_ssl:
+            st.error("⚠️ SSL Verification is DISABLED - Your connection is NOT secure!")
+            st.info("This setting affects all network connections in this app session.")
+
     # Authentication button
     if not st.session_state.authenticated:
         if st.button("🔗 Connect to Google Calendar", type="primary"):
             with st.spinner("Authenticating..."):
-                service, status = authenticate_google()
+                service, status = authenticate_google(disable_ssl_verify=st.session_state.disable_ssl_verify)
 
                 if status == "success":
                     st.session_state.service = service
@@ -416,17 +558,40 @@ def main():
                     st.rerun()
                 else:
                     st.error(f"Authentication failed: {status}")
+                    st.error("**Troubleshooting tips:**")
+                    st.markdown("""
+                    1. Try enabling 'Disable SSL Verification' in Diagnostic Options above
+                    2. Disconnect from VPN if using one
+                    3. Temporarily disable antivirus SSL scanning
+                    4. Check if you're behind a corporate proxy
+                    5. Delete `token.json` file and try again
+                    """)
                     st.stop()
     else:
         st.success(f"✅ Connected as: {st.session_state.user_email}")
-        if st.button("🔄 Reconnect"):
-            # Clear token and reconnect
-            if os.path.exists('token.json'):
-                os.remove('token.json')
-            st.session_state.authenticated = False
-            st.session_state.service = None
-            st.session_state.user_email = None
-            st.rerun()
+        if st.session_state.disable_ssl_verify:
+            st.error("⚠️ You are connected with SSL verification DISABLED")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔄 Reconnect"):
+                # Clear token and reconnect
+                if os.path.exists('token.json'):
+                    os.remove('token.json')
+                st.session_state.authenticated = False
+                st.session_state.service = None
+                st.session_state.user_email = None
+                st.rerun()
+        with col2:
+            if st.button("🔒 Test With SSL Enabled"):
+                st.session_state.disable_ssl_verify = False
+                if os.path.exists('token.json'):
+                    os.remove('token.json')
+                st.session_state.authenticated = False
+                st.session_state.service = None
+                st.session_state.user_email = None
+                st.info("Now reconnect with SSL verification enabled to test your connection.")
+                st.rerun()
 
     if not st.session_state.authenticated:
         st.stop()

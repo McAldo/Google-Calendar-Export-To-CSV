@@ -6,7 +6,15 @@
       "Bash(venvScriptsactivate)",
       "Bash(pip:*)",
       "Bash(source venv/Scripts/activate)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(python -m py_compile:*)",
+      "Bash(ls:*)",
+      "Bash(python:*)",
+      "Bash(echo:*)",
+      "Bash(netsh winhttp:*)",
+      "Bash(wmic product:*)",
+      "Bash(systeminfo:*)"
     ]
   }
 }
