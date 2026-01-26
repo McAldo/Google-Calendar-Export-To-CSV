@@ -282,12 +282,14 @@ def authenticate_google(disable_ssl_verify=False):
                     2. Log in and authorize the app
                     3. You'll see "This site can't be reached" - **this is normal!**
                     4. Copy the **entire URL** from your browser's address bar
-                    5. Paste it in the box below and press Enter
+                    5. Paste it in the box below **exactly as copied** (keep http://, don't change to https://)
 
-                    **Example URL to copy:**
+                    **Example URL to copy (keep http:// not https://):**
                     ```
                     http://localhost/?code=4/0AY0e...&scope=https://...
                     ```
+
+                    ⚠️ **Important:** The URL must start with `http://localhost` (not `https://`)
                     """)
 
                     # Debug info
@@ -304,6 +306,9 @@ def authenticate_google(disable_ssl_verify=False):
 
                     if redirect_url:
                         try:
+                            # Show what we're processing
+                            st.info(f"Processing URL: {redirect_url[:50]}...")
+
                             # Extract the authorization response from the URL
                             flow.fetch_token(authorization_response=redirect_url)
                             creds = flow.credentials
@@ -316,8 +321,23 @@ def authenticate_google(disable_ssl_verify=False):
 
                             st.success("✅ Authentication successful!")
                         except Exception as e:
-                            st.error(f"❌ Failed to process authorization URL: {str(e)}")
-                            st.info("💡 Try clicking 'Clear' and starting over")
+                            st.error(f"❌ Failed to process authorization URL")
+                            st.error(f"**Error details:** {str(e)}")
+
+                            # Provide helpful tips based on common errors
+                            if "redirect_uri_mismatch" in str(e):
+                                st.warning("**Redirect URI mismatch!** Make sure you're using Desktop app credentials (not Web app) in your Streamlit secrets.")
+                            elif "http" in str(e).lower() and "https" in str(e).lower():
+                                st.warning("**Protocol mismatch!** The URL should start with http:// (not https://)")
+
+                            st.info("💡 **Troubleshooting:**")
+                            st.markdown("""
+                            1. Make sure you copied the **complete URL** from the browser (including http://)
+                            2. The URL should start with `http://localhost` (not https)
+                            3. Make sure you're using **Desktop app** credentials in Streamlit secrets
+                            4. Try clicking the button below to restart
+                            """)
+
                             if st.button("🔄 Clear and Restart Authentication"):
                                 if 'oauth_flow' in st.session_state:
                                     del st.session_state.oauth_flow
