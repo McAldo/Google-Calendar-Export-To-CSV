@@ -250,10 +250,17 @@ def authenticate_google(disable_ssl_verify=False):
 
                     # Create or retrieve OAuth flow from session state (to preserve state parameter)
                     if 'oauth_flow' not in st.session_state:
+                        # Load credentials to get redirect_uri
+                        with open('credentials.json', 'r') as f:
+                            creds_data = json.load(f)
+
+                        # Get redirect_uri from credentials
+                        redirect_uri = creds_data['installed']['redirect_uris'][0]
+
                         flow = InstalledAppFlow.from_client_secrets_file(
                             'credentials.json', SCOPES)
-                        # Set redirect_uri explicitly to the first one in the credentials
-                        flow.redirect_uri = flow.client_config['installed']['redirect_uris'][0]
+                        # Set redirect_uri explicitly
+                        flow.redirect_uri = redirect_uri
                         # Generate authorization URL and store flow
                         auth_url, _ = flow.authorization_url(
                             prompt='consent',
@@ -261,9 +268,11 @@ def authenticate_google(disable_ssl_verify=False):
                         )
                         st.session_state.oauth_flow = flow
                         st.session_state.auth_url = auth_url
+                        st.session_state.redirect_uri = redirect_uri
                     else:
                         flow = st.session_state.oauth_flow
                         auth_url = st.session_state.auth_url
+                        redirect_uri = st.session_state.redirect_uri
 
                     # Display instructions to user
                     st.markdown(f"""
@@ -283,7 +292,7 @@ def authenticate_google(disable_ssl_verify=False):
 
                     # Debug info
                     with st.expander("🔍 Debug Info"):
-                        st.write(f"Using redirect_uri: `{flow.redirect_uri}`")
+                        st.write(f"Using redirect_uri: `{redirect_uri}`")
                         st.write("If you see an error about redirect_uri, make sure this URL is added to your Google OAuth credentials.")
 
                     # Text input for the redirect URL
