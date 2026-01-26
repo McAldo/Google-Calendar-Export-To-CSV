@@ -243,16 +243,22 @@ def authenticate_google(disable_ssl_verify=False):
                 return None, "credentials_missing"
 
             try:
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    'credentials.json', SCOPES)
-
                 # Check if running on cloud (no browser available)
                 if is_running_on_cloud():
                     # Use console-based OAuth flow for cloud environments
                     st.info("🌐 **Running on cloud - manual authentication required**")
 
-                    # Generate authorization URL
-                    auth_url, _ = flow.authorization_url(prompt='consent')
+                    # Create or retrieve OAuth flow from session state (to preserve state parameter)
+                    if 'oauth_flow' not in st.session_state:
+                        flow = InstalledAppFlow.from_client_secrets_file(
+                            'credentials.json', SCOPES)
+                        # Generate authorization URL and store flow
+                        auth_url, _ = flow.authorization_url(prompt='consent')
+                        st.session_state.oauth_flow = flow
+                        st.session_state.auth_url = auth_url
+                    else:
+                        flow = st.session_state.oauth_flow
+                        auth_url = st.session_state.auth_url
 
                     # Display instructions to user
                     st.markdown(f"""
@@ -270,32 +276,43 @@ def authenticate_google(disable_ssl_verify=False):
                     ```
                     """)
 
-                    # Check if we have the auth response in session state
-                    if 'auth_code_url' not in st.session_state:
-                        st.session_state.auth_code_url = ''
-
                     # Text input for the redirect URL
                     redirect_url = st.text_input(
                         "Paste the full redirect URL here:",
-                        value=st.session_state.auth_code_url,
-                        key="oauth_redirect_input"
+                        key="oauth_redirect_input",
+                        placeholder="http://localhost/?code=..."
                     )
 
-                    if redirect_url and redirect_url != st.session_state.auth_code_url:
-                        st.session_state.auth_code_url = redirect_url
-
+                    if redirect_url:
                         try:
                             # Extract the authorization response from the URL
                             flow.fetch_token(authorization_response=redirect_url)
                             creds = flow.credentials
+
+                            # Clear OAuth flow from session state
+                            if 'oauth_flow' in st.session_state:
+                                del st.session_state.oauth_flow
+                            if 'auth_url' in st.session_state:
+                                del st.session_state.auth_url
+
                             st.success("✅ Authentication successful!")
                         except Exception as e:
-                            return None, f"auth_error: Failed to process authorization URL: {str(e)}"
+                            st.error(f"❌ Failed to process authorization URL: {str(e)}")
+                            st.info("💡 Try clicking 'Clear' and starting over")
+                            if st.button("🔄 Clear and Restart Authentication"):
+                                if 'oauth_flow' in st.session_state:
+                                    del st.session_state.oauth_flow
+                                if 'auth_url' in st.session_state:
+                                    del st.session_state.auth_url
+                                st.rerun()
+                            return None, f"auth_error: {str(e)}"
                     else:
                         # User hasn't pasted the URL yet
                         return None, "awaiting_auth"
                 else:
                     # Local environment - use browser-based flow
+                    flow = InstalledAppFlow.from_client_secrets_file(
+                        'credentials.json', SCOPES)
                     creds = flow.run_local_server(port=0)
 
             except Exception as e:
