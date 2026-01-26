@@ -103,6 +103,49 @@ def save_settings(settings):
         st.error(f"Could not save settings: {e}")
 
 
+def setup_credentials_from_secrets():
+    """
+    Create credentials.json from Streamlit secrets if running on Streamlit Cloud.
+    This allows the app to work in the cloud without committing credentials to git.
+    """
+    try:
+        # Check if running on Streamlit Cloud (secrets available)
+        if hasattr(st, 'secrets') and 'google_credentials' in st.secrets:
+            # Get redirect_uris - handle both string and list formats
+            redirect_uris_raw = st.secrets["google_credentials"]["redirect_uris"]
+
+            # If it's a string, convert to list; if already a list, use as-is
+            if isinstance(redirect_uris_raw, str):
+                redirect_uris = [redirect_uris_raw]
+            else:
+                redirect_uris = list(redirect_uris_raw)
+
+            # Create credentials.json from secrets
+            credentials_data = {
+                "installed": {
+                    "client_id": st.secrets["google_credentials"]["client_id"],
+                    "project_id": st.secrets["google_credentials"]["project_id"],
+                    "auth_uri": st.secrets["google_credentials"]["auth_uri"],
+                    "token_uri": st.secrets["google_credentials"]["token_uri"],
+                    "auth_provider_x509_cert_url": st.secrets["google_credentials"]["auth_provider_x509_cert_url"],
+                    "client_secret": st.secrets["google_credentials"]["client_secret"],
+                    "redirect_uris": redirect_uris
+                }
+            }
+
+            # Write to credentials.json
+            with open('credentials.json', 'w') as f:
+                json.dump(credentials_data, f)
+
+            st.success("✅ Loaded credentials from Streamlit secrets")
+            return True
+    except Exception as e:
+        st.error(f"Error loading credentials from secrets: {e}")
+        st.info("Secrets structure detected: " + str(list(st.secrets.keys()) if hasattr(st, 'secrets') else "No secrets"))
+
+    return False
+
+
 def enable_ssl_bypass():
     """
     Globally disable SSL certificate verification for Windows compatibility.
@@ -480,6 +523,9 @@ def main():
         st.session_state.user_email = None
     if 'disable_ssl_verify' not in st.session_state:
         st.session_state.disable_ssl_verify = False
+
+    # Setup credentials from Streamlit secrets if running on cloud
+    setup_credentials_from_secrets()
 
     # Check for credentials.json
     if not os.path.exists('credentials.json'):
