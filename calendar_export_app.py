@@ -655,6 +655,11 @@ def main():
         st.error("⚠️ **credentials.json not found!** Please follow the setup instructions above to create and download your credentials.")
         st.stop()
 
+    # Auto-enable SSL bypass on cloud (Linux servers have same httplib2 SSL issues)
+    if is_running_on_cloud() and not st.session_state.disable_ssl_verify:
+        st.session_state.disable_ssl_verify = True
+        enable_ssl_bypass()
+
     # SSL Options
     with st.expander("🔧 SSL Options (for Windows compatibility)", expanded=not st.session_state.authenticated):
         st.info("""
