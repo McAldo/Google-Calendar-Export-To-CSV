@@ -23,6 +23,10 @@ from googleapiclient.errors import HttpError
 import httplib2
 from google_auth_httplib2 import AuthorizedHttp
 
+# Allow http://localhost for OAuth redirect (safe for desktop app flow)
+# This is needed for manual OAuth flow on cloud platforms
+os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+
 # Global flag for SSL bypass
 _ssl_bypass_enabled = False
 
