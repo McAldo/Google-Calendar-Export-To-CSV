@@ -252,8 +252,13 @@ def authenticate_google(disable_ssl_verify=False):
                     if 'oauth_flow' not in st.session_state:
                         flow = InstalledAppFlow.from_client_secrets_file(
                             'credentials.json', SCOPES)
+                        # Set redirect_uri explicitly to the first one in the credentials
+                        flow.redirect_uri = flow.client_config['installed']['redirect_uris'][0]
                         # Generate authorization URL and store flow
-                        auth_url, _ = flow.authorization_url(prompt='consent')
+                        auth_url, _ = flow.authorization_url(
+                            prompt='consent',
+                            access_type='offline'
+                        )
                         st.session_state.oauth_flow = flow
                         st.session_state.auth_url = auth_url
                     else:
@@ -275,6 +280,11 @@ def authenticate_google(disable_ssl_verify=False):
                     http://localhost/?code=4/0AY0e...&scope=https://...
                     ```
                     """)
+
+                    # Debug info
+                    with st.expander("🔍 Debug Info"):
+                        st.write(f"Using redirect_uri: `{flow.redirect_uri}`")
+                        st.write("If you see an error about redirect_uri, make sure this URL is added to your Google OAuth credentials.")
 
                     # Text input for the redirect URL
                     redirect_url = st.text_input(
