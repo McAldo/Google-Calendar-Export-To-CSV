@@ -696,7 +696,9 @@ def main():
     # Authentication button
     if not st.session_state.authenticated:
         # Try to authenticate (for cloud, this will show the manual OAuth UI)
-        service, status = authenticate_google(disable_ssl_verify=st.session_state.disable_ssl_verify)
+        # Auto-enable SSL bypass on cloud (SSL issues with httplib2 on cloud servers)
+        ssl_bypass_needed = is_running_on_cloud() or st.session_state.disable_ssl_verify
+        service, status = authenticate_google(disable_ssl_verify=ssl_bypass_needed)
 
         if status == "success":
             st.session_state.service = service
