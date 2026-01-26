@@ -202,6 +202,16 @@ def create_http_client(disable_ssl_verify=False):
         return http
 
 
+def is_running_on_cloud():
+    """Check if running on Streamlit Cloud or similar environment."""
+    # Check for common cloud environment indicators
+    return (
+        os.environ.get('STREAMLIT_SHARING_MODE') is not None or
+        os.environ.get('HOSTNAME', '').startswith('streamlit') or
+        not os.path.exists('/usr/bin/xdg-open')  # No display available
+    )
+
+
 def authenticate_google(disable_ssl_verify=False):
     """
     Authenticate with Google Calendar API using OAuth 2.0.
@@ -235,13 +245,66 @@ def authenticate_google(disable_ssl_verify=False):
             try:
                 flow = InstalledAppFlow.from_client_secrets_file(
                     'credentials.json', SCOPES)
-                creds = flow.run_local_server(port=0)
+
+                # Check if running on cloud (no browser available)
+                if is_running_on_cloud():
+                    # Use console-based OAuth flow for cloud environments
+                    st.info("🌐 **Running on cloud - manual authentication required**")
+
+                    # Generate authorization URL
+                    auth_url, _ = flow.authorization_url(prompt='consent')
+
+                    # Display instructions to user
+                    st.markdown(f"""
+                    ### Manual Authentication Steps:
+
+                    1. Click this link to authorize: [**Open Google Authorization**]({auth_url})
+                    2. Log in and authorize the app
+                    3. You'll see "This site can't be reached" - **this is normal!**
+                    4. Copy the **entire URL** from your browser's address bar
+                    5. Paste it in the box below and press Enter
+
+                    **Example URL to copy:**
+                    ```
+                    http://localhost/?code=4/0AY0e...&scope=https://...
+                    ```
+                    """)
+
+                    # Check if we have the auth response in session state
+                    if 'auth_code_url' not in st.session_state:
+                        st.session_state.auth_code_url = ''
+
+                    # Text input for the redirect URL
+                    redirect_url = st.text_input(
+                        "Paste the full redirect URL here:",
+                        value=st.session_state.auth_code_url,
+                        key="oauth_redirect_input"
+                    )
+
+                    if redirect_url and redirect_url != st.session_state.auth_code_url:
+                        st.session_state.auth_code_url = redirect_url
+
+                        try:
+                            # Extract the authorization response from the URL
+                            flow.fetch_token(authorization_response=redirect_url)
+                            creds = flow.credentials
+                            st.success("✅ Authentication successful!")
+                        except Exception as e:
+                            return None, f"auth_error: Failed to process authorization URL: {str(e)}"
+                    else:
+                        # User hasn't pasted the URL yet
+                        return None, "awaiting_auth"
+                else:
+                    # Local environment - use browser-based flow
+                    creds = flow.run_local_server(port=0)
+
             except Exception as e:
                 return None, f"auth_error: {str(e)}"
 
         # Save credentials for next run
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
+        if creds:
+            with open('token.json', 'w') as token:
+                token.write(creds.to_json())
 
     try:
         # Create HTTP client with optional SSL bypass
@@ -572,33 +635,37 @@ def main():
 
     # Authentication button
     if not st.session_state.authenticated:
-        if st.button("🔗 Connect to Google Calendar", type="primary"):
-            with st.spinner("Authenticating..."):
-                service, status = authenticate_google(disable_ssl_verify=st.session_state.disable_ssl_verify)
+        # Try to authenticate (for cloud, this will show the manual OAuth UI)
+        service, status = authenticate_google(disable_ssl_verify=st.session_state.disable_ssl_verify)
 
-                if status == "success":
-                    st.session_state.service = service
-                    st.session_state.authenticated = True
+        if status == "success":
+            st.session_state.service = service
+            st.session_state.authenticated = True
 
-                    # Get user email from primary calendar
-                    try:
-                        calendar = service.calendars().get(calendarId='primary').execute()
-                        st.session_state.user_email = calendar.get('id', 'Connected')
-                    except:
-                        st.session_state.user_email = 'Connected'
+            # Get user email from primary calendar
+            try:
+                calendar = service.calendars().get(calendarId='primary').execute()
+                st.session_state.user_email = calendar.get('id', 'Connected')
+            except:
+                st.session_state.user_email = 'Connected'
 
-                    st.rerun()
-                else:
-                    st.error(f"Authentication failed: {status}")
-                    st.error("**Troubleshooting tips:**")
-                    st.markdown("""
-                    1. Try enabling 'Disable SSL Verification' in Diagnostic Options above
-                    2. Disconnect from VPN if using one
-                    3. Temporarily disable antivirus SSL scanning
-                    4. Check if you're behind a corporate proxy
-                    5. Delete `token.json` file and try again
-                    """)
-                    st.stop()
+            st.rerun()
+        elif status == "awaiting_auth":
+            # User is in the middle of OAuth flow, instructions are shown above
+            st.stop()
+        elif status == "credentials_missing":
+            st.error("⚠️ Credentials not properly configured!")
+            st.stop()
+        else:
+            # Show error only for actual failures, not during OAuth flow
+            st.error(f"Authentication failed: {status}")
+            st.error("**Troubleshooting tips:**")
+            st.markdown("""
+            1. Make sure you pasted the complete URL including 'code='
+            2. Try the authentication link again
+            3. Check that your Google credentials are correctly configured in secrets
+            """)
+            st.stop()
     else:
         st.success(f"✅ Connected as: {st.session_state.user_email}")
 
