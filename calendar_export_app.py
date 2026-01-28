@@ -420,18 +420,23 @@ def get_calendar_events(service, calendar_ids, start_datetime, end_datetime, sel
     # Convert selected color names to IDs
     color_ids = [k for k, v in CALENDAR_COLORS.items() if v in selected_colors]
 
-    # Convert datetime to RFC3339 format
+    # Convert datetime to RFC3339 format (treating as UTC)
+    # Note: 'Z' suffix indicates UTC timezone
     time_min = start_datetime.isoformat() + 'Z'
     time_max = end_datetime.isoformat() + 'Z'
 
     for calendar_id in calendar_ids:
         try:
+            # Fetch events with maxResults to ensure we get all events
+            # showDeleted=False to exclude deleted events
             events_result = service.events().list(
                 calendarId=calendar_id,
                 timeMin=time_min,
                 timeMax=time_max,
+                maxResults=2500,  # Google Calendar API max per request
                 singleEvents=True,
-                orderBy='startTime'
+                orderBy='startTime',
+                showDeleted=False
             ).execute()
 
             events = events_result.get('items', [])
@@ -864,6 +869,35 @@ def main():
         st.error("End date/time must be after start date/time!")
         st.stop()
 
+    # Debug section to help identify date/cache issues
+    with st.expander("🔍 Debug Info & Cache Control"):
+        st.markdown("**Date Range Being Sent to Google Calendar API:**")
+        st.code(f"""
+Start: {start_datetime.isoformat()}Z (UTC)
+End:   {end_datetime.isoformat()}Z (UTC)
+        """)
+
+        st.markdown("**Current System Time:**")
+        st.write(f"Local time: {datetime.now()}")
+        st.write(f"UTC time: {datetime.utcnow()}")
+
+        st.markdown("**Cache Control:**")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔄 Clear Auth Token"):
+                if os.path.exists('token.json'):
+                    os.remove('token.json')
+                    st.session_state.authenticated = False
+                    st.session_state.service = None
+                    st.success("Token cleared! Please reconnect.")
+                    st.rerun()
+        with col2:
+            if st.button("🗑️ Reset All Settings"):
+                if os.path.exists(SETTINGS_FILE):
+                    os.remove(SETTINGS_FILE)
+                    st.success("Settings reset! Page will reload.")
+                    st.rerun()
+
     # Section E: Colour Filter & Type Mapping
     st.header("🎨 Step 4: Colour Filter & Type Mapping")
     st.markdown("Select which colours to export and optionally assign type labels:")
@@ -1010,6 +1044,19 @@ def main():
             st.write(f"- Date range: {start_datetime.strftime('%d/%m/%Y %H:%M')} to {end_datetime.strftime('%d/%m/%Y %H:%M')}")
             st.write(f"- Selected calendars: {len(selected_calendar_ids)}")
             st.write(f"- Selected colours: {', '.join(selected_colors)}")
+
+            # Debug: Show date range of fetched events
+            if events:
+                event_dates = []
+                for event in events:
+                    start = event.get('start', {})
+                    event_date_str = start.get('dateTime', start.get('date', ''))
+                    if event_date_str:
+                        event_dates.append(event_date_str)
+
+                if event_dates:
+                    st.write(f"- Earliest event: {event_dates[0]}")
+                    st.write(f"- Latest event: {event_dates[-1]}")
 
     # Save settings to file if changed
     if st.session_state.settings_changed:
