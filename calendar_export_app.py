@@ -124,9 +124,13 @@ def setup_credentials_from_secrets():
             else:
                 redirect_uris = list(redirect_uris_raw)
 
+            # Determine client type: 'web' or 'installed' (desktop)
+            # Default to 'installed' for backward compatibility
+            client_type = st.secrets["google_credentials"].get("client_type", "installed")
+
             # Create credentials.json from secrets
             credentials_data = {
-                "installed": {
+                client_type: {
                     "client_id": st.secrets["google_credentials"]["client_id"],
                     "project_id": st.secrets["google_credentials"]["project_id"],
                     "auth_uri": st.secrets["google_credentials"]["auth_uri"],
@@ -141,7 +145,7 @@ def setup_credentials_from_secrets():
             with open('credentials.json', 'w') as f:
                 json.dump(credentials_data, f)
 
-            st.success("✅ Loaded credentials from Streamlit secrets")
+            st.success(f"✅ Loaded {client_type} credentials from Streamlit secrets")
             return True
     except Exception as e:
         st.error(f"Error loading credentials from secrets: {e}")
@@ -216,6 +220,53 @@ def is_running_on_cloud():
     )
 
 
+def get_oauth_client_type():
+    """
+    Determine OAuth client type from credentials.json.
+    Returns: 'web' or 'installed'
+    """
+    try:
+        if os.path.exists('credentials.json'):
+            with open('credentials.json', 'r') as f:
+                creds_data = json.load(f)
+            if 'web' in creds_data:
+                return 'web'
+            elif 'installed' in creds_data:
+                return 'installed'
+    except:
+        pass
+    return 'installed'  # Default
+
+
+def get_streamlit_app_url():
+    """
+    Get the current Streamlit app URL for OAuth redirects.
+    Returns the full URL including protocol and domain.
+    """
+    try:
+        # Try to get from Streamlit's session info
+        from streamlit.web.server import Server
+        from streamlit.runtime import get_instance
+
+        runtime = get_instance()
+        if runtime and hasattr(runtime, '_session_mgr'):
+            # Get the first session's client
+            sessions = list(runtime._session_mgr._sessions.values())
+            if sessions:
+                session = sessions[0]
+                if hasattr(session, '_client') and session._client:
+                    return session._client.request.host_url.rstrip('/')
+    except:
+        pass
+
+    # Fallback: construct from environment or use placeholder
+    if os.environ.get('STREAMLIT_SHARING_MODE'):
+        # On Streamlit Cloud, construct from repo info if available
+        return "https://your-app.streamlit.app"  # User will need to update this
+
+    return "http://localhost:8501"
+
+
 def authenticate_google(disable_ssl_verify=False):
     """
     Authenticate with Google Calendar API using OAuth 2.0.
@@ -247,26 +298,78 @@ def authenticate_google(disable_ssl_verify=False):
                 return None, "credentials_missing"
 
             try:
+                # Determine OAuth client type
+                client_type = get_oauth_client_type()
+
                 # Check if running on cloud (no browser available)
                 if is_running_on_cloud():
-                    # Use console-based OAuth flow for cloud environments
-                    st.info("🌐 **Running on cloud - manual authentication required**")
+                    # Load credentials to determine flow type
+                    with open('credentials.json', 'r') as f:
+                        creds_data = json.load(f)
 
-                    # Create or retrieve OAuth flow from session state (to preserve state parameter)
+                    # Check for OAuth callback in query parameters (for web clients)
+                    query_params = st.query_params
+                    if 'code' in query_params and client_type == 'web':
+                        # Web OAuth callback - process automatically
+                        if 'oauth_flow' in st.session_state:
+                            try:
+                                flow = st.session_state.oauth_flow
+                                # Construct full callback URL from query parameters
+                                callback_url = get_streamlit_app_url()
+                                # Add query parameters
+                                callback_url += "?" + "&".join([f"{k}={v[0]}" for k, v in query_params.items()])
+
+                                st.info("🔄 Processing OAuth callback...")
+                                flow.fetch_token(code=query_params['code'][0])
+                                creds = flow.credentials
+
+                                # Clear OAuth flow and query params
+                                del st.session_state.oauth_flow
+                                st.query_params.clear()
+
+                                st.success("✅ Authentication successful! Redirecting...")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"OAuth callback failed: {e}")
+                                if 'oauth_flow' in st.session_state:
+                                    del st.session_state.oauth_flow
+                                st.query_params.clear()
+                                return None, f"auth_error: {str(e)}"
+
+                    # Create or retrieve OAuth flow from session state
                     if 'oauth_flow' not in st.session_state:
-                        # Load credentials to get redirect_uri
-                        with open('credentials.json', 'r') as f:
-                            creds_data = json.load(f)
+                        if client_type == 'web':
+                            # Web application OAuth flow
+                            from google_auth_oauthlib.flow import Flow
 
-                        # Get redirect_uri from credentials
-                        redirect_uri = creds_data['installed']['redirect_uris'][0]
+                            # Get redirect URI from credentials or use app URL
+                            redirect_uris = creds_data['web']['redirect_uris']
+                            # Try to find the Streamlit app URL in redirect URIs
+                            app_url = get_streamlit_app_url()
+                            redirect_uri = None
+                            for uri in redirect_uris:
+                                if 'streamlit.app' in uri or uri == app_url:
+                                    redirect_uri = uri
+                                    break
+                            if not redirect_uri:
+                                redirect_uri = redirect_uris[0] if redirect_uris else app_url
 
-                        flow = InstalledAppFlow.from_client_secrets_file(
-                            'credentials.json', SCOPES)
-                        # Set redirect_uri explicitly
-                        flow.redirect_uri = redirect_uri
+                            flow = Flow.from_client_secrets_file(
+                                'credentials.json',
+                                scopes=SCOPES,
+                                redirect_uri=redirect_uri
+                            )
+                            st.info("🌐 **Using Web OAuth flow**")
+                        else:
+                            # Desktop (installed) application OAuth flow
+                            redirect_uri = creds_data['installed']['redirect_uris'][0]
+                            flow = InstalledAppFlow.from_client_secrets_file(
+                                'credentials.json', SCOPES)
+                            flow.redirect_uri = redirect_uri
+                            st.info("🌐 **Using Desktop OAuth flow (manual)**")
+
                         # Generate authorization URL and store flow
-                        auth_url, _ = flow.authorization_url(
+                        auth_url, state = flow.authorization_url(
                             prompt='consent',
                             access_type='offline'
                         )
@@ -278,79 +381,98 @@ def authenticate_google(disable_ssl_verify=False):
                         auth_url = st.session_state.auth_url
                         redirect_uri = st.session_state.redirect_uri
 
-                    # Display instructions to user
-                    st.markdown(f"""
-                    ### Manual Authentication Steps:
+                    # Display instructions based on client type
+                    if client_type == 'web':
+                        st.markdown(f"""
+                        ### 🔐 Google Authentication
 
-                    1. Click this link to authorize: [**Open Google Authorization**]({auth_url})
-                    2. Log in and authorize the app
-                    3. You'll see "This site can't be reached" - **this is normal!**
-                    4. Copy the **entire URL** from your browser's address bar
-                    5. Paste it in the box below **exactly as copied** (keep http://, don't change to https://)
+                        Click the button below to authorize the app. You'll be redirected back automatically.
 
-                    **Example URL to copy (keep http:// not https://):**
-                    ```
-                    http://localhost/?code=4/0AY0e...&scope=https://...
-                    ```
+                        [**🔓 Authorize with Google**]({auth_url})
 
-                    ⚠️ **Important:** The URL must start with `http://localhost` (not `https://`)
-                    """)
+                        After authorizing, you'll be redirected back to this page.
+                        """)
+                    else:
+                        # Desktop client - manual copy/paste flow
+                        st.markdown(f"""
+                        ### Manual Authentication Steps:
+
+                        1. Click this link to authorize: [**Open Google Authorization**]({auth_url})
+                        2. Log in and authorize the app
+                        3. You'll see "This site can't be reached" - **this is normal!**
+                        4. Copy the **entire URL** from your browser's address bar
+                        5. Paste it in the box below **exactly as copied** (keep http://, don't change to https://)
+
+                        **Example URL to copy (keep http:// not https://):**
+                        ```
+                        http://localhost/?code=4/0AY0e...&scope=https://...
+                        ```
+
+                        ⚠️ **Important:** The URL must start with `http://localhost` (not `https://`)
+                        """)
 
                     # Debug info
                     with st.expander("🔍 Debug Info"):
+                        st.write(f"Client type: {client_type}")
                         st.write(f"Using redirect_uri: `{redirect_uri}`")
                         st.write("If you see an error about redirect_uri, make sure this URL is added to your Google OAuth credentials.")
 
-                    # Text input for the redirect URL
-                    redirect_url = st.text_input(
-                        "Paste the full redirect URL here:",
-                        key="oauth_redirect_input",
-                        placeholder="http://localhost/?code=..."
-                    )
+                    # For desktop clients, show text input for manual URL paste
+                    if client_type == 'installed':
+                        # Text input for the redirect URL
+                        redirect_url = st.text_input(
+                            "Paste the full redirect URL here:",
+                            key="oauth_redirect_input",
+                            placeholder="http://localhost/?code=..."
+                        )
 
-                    if redirect_url:
-                        try:
-                            # Show what we're processing
-                            st.info(f"Processing URL: {redirect_url[:50]}...")
+                        if redirect_url:
+                            try:
+                                # Show what we're processing
+                                st.info(f"Processing URL: {redirect_url[:50]}...")
 
-                            # Extract the authorization response from the URL
-                            flow.fetch_token(authorization_response=redirect_url)
-                            creds = flow.credentials
+                                # Extract the authorization response from the URL
+                                flow.fetch_token(authorization_response=redirect_url)
+                                creds = flow.credentials
 
-                            # Clear OAuth flow from session state
-                            if 'oauth_flow' in st.session_state:
-                                del st.session_state.oauth_flow
-                            if 'auth_url' in st.session_state:
-                                del st.session_state.auth_url
-
-                            st.success("✅ Authentication successful!")
-                        except Exception as e:
-                            st.error(f"❌ Failed to process authorization URL")
-                            st.error(f"**Error details:** {str(e)}")
-
-                            # Provide helpful tips based on common errors
-                            if "redirect_uri_mismatch" in str(e):
-                                st.warning("**Redirect URI mismatch!** Make sure you're using Desktop app credentials (not Web app) in your Streamlit secrets.")
-                            elif "http" in str(e).lower() and "https" in str(e).lower():
-                                st.warning("**Protocol mismatch!** The URL should start with http:// (not https://)")
-
-                            st.info("💡 **Troubleshooting:**")
-                            st.markdown("""
-                            1. Make sure you copied the **complete URL** from the browser (including http://)
-                            2. The URL should start with `http://localhost` (not https)
-                            3. Make sure you're using **Desktop app** credentials in Streamlit secrets
-                            4. Try clicking the button below to restart
-                            """)
-
-                            if st.button("🔄 Clear and Restart Authentication"):
+                                # Clear OAuth flow from session state
                                 if 'oauth_flow' in st.session_state:
                                     del st.session_state.oauth_flow
                                 if 'auth_url' in st.session_state:
                                     del st.session_state.auth_url
-                                st.rerun()
-                            return None, f"auth_error: {str(e)}"
+
+                                st.success("✅ Authentication successful!")
+                            except Exception as e:
+                                st.error(f"❌ Failed to process authorization URL")
+                                st.error(f"**Error details:** {str(e)}")
+
+                                # Provide helpful tips based on common errors
+                                if "redirect_uri_mismatch" in str(e):
+                                    st.warning("**Redirect URI mismatch!** Make sure you're using Desktop app credentials (not Web app) in your Streamlit secrets.")
+                                elif "http" in str(e).lower() and "https" in str(e).lower():
+                                    st.warning("**Protocol mismatch!** The URL should start with http:// (not https://)")
+
+                                st.info("💡 **Troubleshooting:**")
+                                st.markdown("""
+                                1. Make sure you copied the **complete URL** from the browser (including http://)
+                                2. The URL should start with `http://localhost` (not https)
+                                3. Make sure you're using **Desktop app** credentials in Streamlit secrets
+                                4. Try clicking the button below to restart
+                                """)
+
+                                if st.button("🔄 Clear and Restart Authentication"):
+                                    if 'oauth_flow' in st.session_state:
+                                        del st.session_state.oauth_flow
+                                    if 'auth_url' in st.session_state:
+                                        del st.session_state.auth_url
+                                    st.rerun()
+                                return None, f"auth_error: {str(e)}"
+                        else:
+                            # User hasn't pasted the URL yet
+                            return None, "awaiting_auth"
                     else:
-                        # User hasn't pasted the URL yet
+                        # Web client - just wait for OAuth callback
+                        st.info("⏳ Waiting for you to authorize via the link above...")
                         return None, "awaiting_auth"
                 else:
                     # Local environment - use browser-based flow
