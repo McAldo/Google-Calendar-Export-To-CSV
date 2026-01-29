@@ -309,32 +309,55 @@ def authenticate_google(disable_ssl_verify=False):
 
                     # Check for OAuth callback in query parameters (for web clients)
                     query_params = st.query_params
+
+                    # Debug info (temporary)
+                    with st.expander("🔍 OAuth Debug Info"):
+                        st.write(f"Client type detected: {client_type}")
+                        st.write(f"Query params present: {dict(query_params)}")
+                        st.write(f"Has 'code' param: {'code' in query_params}")
+                        st.write(f"OAuth flow in session: {'oauth_flow' in st.session_state}")
+                        st.write(f"Session state keys: {list(st.session_state.keys())}")
+
                     if 'code' in query_params and client_type == 'web':
                         # Web OAuth callback - process automatically
-                        if 'oauth_flow' in st.session_state:
-                            try:
+                        st.info("🔄 OAuth callback detected! Processing...")
+
+                        try:
+                            # Recreate flow if not in session (session might be lost on redirect)
+                            if 'oauth_flow' in st.session_state:
                                 flow = st.session_state.oauth_flow
-                                # Construct full callback URL from query parameters
-                                callback_url = get_streamlit_app_url()
-                                # Add query parameters
-                                callback_url += "?" + "&".join([f"{k}={v[0]}" for k, v in query_params.items()])
+                                st.write("✓ Using flow from session state")
+                            else:
+                                # Recreate flow from credentials
+                                st.warning("⚠️ OAuth flow not in session, recreating...")
+                                from google_auth_oauthlib.flow import Flow
 
-                                st.info("🔄 Processing OAuth callback...")
-                                flow.fetch_token(code=query_params['code'][0])
-                                creds = flow.credentials
+                                redirect_uri = creds_data['web']['redirect_uris'][0]
+                                flow = Flow.from_client_secrets_file(
+                                    'credentials.json',
+                                    scopes=SCOPES,
+                                    redirect_uri=redirect_uri
+                                )
 
-                                # Clear OAuth flow and query params
+                            # Fetch token using the authorization code
+                            st.info(f"Fetching token with code: {query_params['code'][0][:20]}...")
+                            flow.fetch_token(code=query_params['code'][0])
+                            creds = flow.credentials
+
+                            # Clear OAuth flow and query params
+                            if 'oauth_flow' in st.session_state:
                                 del st.session_state.oauth_flow
-                                st.query_params.clear()
+                            st.query_params.clear()
 
-                                st.success("✅ Authentication successful! Redirecting...")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"OAuth callback failed: {e}")
-                                if 'oauth_flow' in st.session_state:
-                                    del st.session_state.oauth_flow
-                                st.query_params.clear()
-                                return None, f"auth_error: {str(e)}"
+                            st.success("✅ Authentication successful! Redirecting...")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"OAuth callback failed: {e}")
+                            st.error(f"Full error: {repr(e)}")
+                            if 'oauth_flow' in st.session_state:
+                                del st.session_state.oauth_flow
+                            st.query_params.clear()
+                            return None, f"auth_error: {str(e)}"
 
                     # Create or retrieve OAuth flow from session state
                     if 'oauth_flow' not in st.session_state:
