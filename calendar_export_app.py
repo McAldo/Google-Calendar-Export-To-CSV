@@ -315,6 +315,9 @@ def authenticate_google(disable_ssl_verify=False):
                         st.write(f"Client type detected: {client_type}")
                         st.write(f"Query params present: {dict(query_params)}")
                         st.write(f"Has 'code' param: {'code' in query_params}")
+                        if 'code' in query_params:
+                            st.write(f"Code type: {type(query_params['code'])}")
+                            st.write(f"Code value (first 30 chars): {str(query_params['code'])[:30]}")
                         st.write(f"OAuth flow in session: {'oauth_flow' in st.session_state}")
                         st.write(f"Session state keys: {list(st.session_state.keys())}")
 
@@ -332,7 +335,10 @@ def authenticate_google(disable_ssl_verify=False):
                                 st.warning("⚠️ OAuth flow not in session, recreating...")
                                 from google_auth_oauthlib.flow import Flow
 
+                                # CRITICAL: Must use same redirect_uri that was used for auth URL
                                 redirect_uri = creds_data['web']['redirect_uris'][0]
+                                st.write(f"✓ Using redirect_uri: {redirect_uri}")
+
                                 flow = Flow.from_client_secrets_file(
                                     'credentials.json',
                                     scopes=SCOPES,
@@ -340,12 +346,28 @@ def authenticate_google(disable_ssl_verify=False):
                                 )
                                 # Set the state from the callback for CSRF validation
                                 if 'state' in query_params:
-                                    flow._state = query_params['state'][0]
-                                    st.write(f"✓ Set state from callback: {query_params['state'][0][:10]}...")
+                                    state_param = query_params['state']
+                                    if isinstance(state_param, (list, tuple)):
+                                        state_value = state_param[0]
+                                    else:
+                                        state_value = str(state_param)
+                                    flow._state = state_value
+                                    st.write(f"✓ Set state from callback: {state_value[:10]}...")
 
                             # Fetch token using the authorization code
-                            st.info(f"Fetching token with code: {query_params['code'][0][:20]}...")
-                            flow.fetch_token(code=query_params['code'][0])
+                            # Streamlit query_params can return values directly or as lists depending on version
+                            code_param = query_params['code']
+                            if isinstance(code_param, (list, tuple)):
+                                code_value = code_param[0]
+                            else:
+                                code_value = str(code_param)
+
+                            st.info(f"Fetching token...")
+                            st.write(f"✓ Code type: {type(code_param)}")
+                            st.write(f"✓ Code value (first 30 chars): {code_value[:30]}...")
+                            st.write(f"✓ Code length: {len(code_value)}")
+
+                            flow.fetch_token(code=code_value)
                             creds = flow.credentials
 
                             st.success("✅ Token received! Saving credentials...")
@@ -373,24 +395,18 @@ def authenticate_google(disable_ssl_verify=False):
                             # Web application OAuth flow
                             from google_auth_oauthlib.flow import Flow
 
-                            # Get redirect URI from credentials or use app URL
-                            redirect_uris = creds_data['web']['redirect_uris']
-                            # Try to find the Streamlit app URL in redirect URIs
-                            app_url = get_streamlit_app_url()
-                            redirect_uri = None
-                            for uri in redirect_uris:
-                                if 'streamlit.app' in uri or uri == app_url:
-                                    redirect_uri = uri
-                                    break
-                            if not redirect_uri:
-                                redirect_uri = redirect_uris[0] if redirect_uris else app_url
+                            # IMPORTANT: Always use the first redirect URI consistently
+                            # Session state doesn't persist across external redirects, so we can't
+                            # store which URI we used. Must use same URI for auth URL generation
+                            # and token exchange.
+                            redirect_uri = creds_data['web']['redirect_uris'][0]
 
                             flow = Flow.from_client_secrets_file(
                                 'credentials.json',
                                 scopes=SCOPES,
                                 redirect_uri=redirect_uri
                             )
-                            st.info("🌐 **Using Web OAuth flow**")
+                            st.info(f"🌐 **Using Web OAuth flow** (redirect: {redirect_uri})")
                         else:
                             # Desktop (installed) application OAuth flow
                             redirect_uri = creds_data['installed']['redirect_uris'][0]
