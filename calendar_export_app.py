@@ -441,8 +441,8 @@ def authenticate_google(disable_ssl_verify=False):
 
                         After authorizing, you'll be redirected back to this page.
                         """)
-                    else:
-                        # Desktop client - manual copy/paste flow
+                    elif not creds and client_type == 'installed':
+                        # Desktop client - manual copy/paste flow (only if no creds yet)
                         st.markdown(f"""
                         ### Manual Authentication Steps:
 
