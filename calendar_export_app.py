@@ -338,11 +338,17 @@ def authenticate_google(disable_ssl_verify=False):
                                     scopes=SCOPES,
                                     redirect_uri=redirect_uri
                                 )
+                                # Set the state from the callback for CSRF validation
+                                if 'state' in query_params:
+                                    flow._state = query_params['state'][0]
+                                    st.write(f"✓ Set state from callback: {query_params['state'][0][:10]}...")
 
                             # Fetch token using the authorization code
                             st.info(f"Fetching token with code: {query_params['code'][0][:20]}...")
                             flow.fetch_token(code=query_params['code'][0])
                             creds = flow.credentials
+
+                            st.success("✅ Token received! Saving credentials...")
 
                             # Clear OAuth flow and query params
                             if 'oauth_flow' in st.session_state:
@@ -350,10 +356,12 @@ def authenticate_google(disable_ssl_verify=False):
                             st.query_params.clear()
 
                             st.success("✅ Authentication successful! Redirecting...")
-                            st.rerun()
+                            # Don't return here - let it fall through to save credentials and build service
                         except Exception as e:
                             st.error(f"OAuth callback failed: {e}")
                             st.error(f"Full error: {repr(e)}")
+                            import traceback
+                            st.code(traceback.format_exc())
                             if 'oauth_flow' in st.session_state:
                                 del st.session_state.oauth_flow
                             st.query_params.clear()
@@ -792,6 +800,16 @@ def main():
         st.session_state.authenticated = False
     if 'service' not in st.session_state:
         st.session_state.service = None
+
+    # IMPORTANT: Check for OAuth callback before checking authenticated status
+    # If we detect an OAuth callback, clear authentication to force reprocessing
+    query_params = st.query_params
+    if 'code' in query_params and 'state' in query_params:
+        st.info("🔄 OAuth callback detected - clearing old session...")
+        st.session_state.authenticated = False
+        st.session_state.service = None
+        if 'user_email' in st.session_state:
+            st.session_state.user_email = None
     if 'user_email' not in st.session_state:
         st.session_state.user_email = None
     if 'disable_ssl_verify' not in st.session_state:
