@@ -378,7 +378,7 @@ def authenticate_google(disable_ssl_verify=False):
                             st.query_params.clear()
 
                             st.success("✅ Authentication successful! Redirecting...")
-                            # Don't return here - let it fall through to save credentials and build service
+                            # Don't show the auth UI again - we have creds now, skip to saving them
                         except Exception as e:
                             st.error(f"OAuth callback failed: {e}")
                             st.error(f"Full error: {repr(e)}")
@@ -389,8 +389,9 @@ def authenticate_google(disable_ssl_verify=False):
                             st.query_params.clear()
                             return None, f"auth_error: {str(e)}"
 
-                    # Create or retrieve OAuth flow from session state
-                    if 'oauth_flow' not in st.session_state:
+                    # Only show auth UI if we haven't just processed a callback
+                    # If creds is set from callback above, skip this entire section
+                    if not creds and 'oauth_flow' not in st.session_state:
                         if client_type == 'web':
                             # Web application OAuth flow
                             from google_auth_oauthlib.flow import Flow
@@ -423,13 +424,14 @@ def authenticate_google(disable_ssl_verify=False):
                         st.session_state.oauth_flow = flow
                         st.session_state.auth_url = auth_url
                         st.session_state.redirect_uri = redirect_uri
-                    else:
+                    elif not creds:
+                        # Retrieve existing flow from session (only if we don't have creds from callback)
                         flow = st.session_state.oauth_flow
                         auth_url = st.session_state.auth_url
                         redirect_uri = st.session_state.redirect_uri
 
-                    # Display instructions based on client type
-                    if client_type == 'web':
+                    # Display instructions based on client type (only if we don't have creds yet)
+                    if not creds and client_type == 'web':
                         st.markdown(f"""
                         ### 🔐 Google Authentication
 
@@ -458,14 +460,16 @@ def authenticate_google(disable_ssl_verify=False):
                         ⚠️ **Important:** The URL must start with `http://localhost` (not `https://`)
                         """)
 
-                    # Debug info
-                    with st.expander("🔍 Debug Info"):
-                        st.write(f"Client type: {client_type}")
-                        st.write(f"Using redirect_uri: `{redirect_uri}`")
-                        st.write("If you see an error about redirect_uri, make sure this URL is added to your Google OAuth credentials.")
+                    # Debug info (only show if we're in the auth flow, not after successful callback)
+                    if not creds:
+                        with st.expander("🔍 Debug Info"):
+                            st.write(f"Client type: {client_type}")
+                            if 'redirect_uri' in locals():
+                                st.write(f"Using redirect_uri: `{redirect_uri}`")
+                            st.write("If you see an error about redirect_uri, make sure this URL is added to your Google OAuth credentials.")
 
-                    # For desktop clients, show text input for manual URL paste
-                    if client_type == 'installed':
+                    # For desktop clients, show text input for manual URL paste (only if we don't have creds yet)
+                    if not creds and client_type == 'installed':
                         # Text input for the redirect URL
                         redirect_url = st.text_input(
                             "Paste the full redirect URL here:",
@@ -517,8 +521,8 @@ def authenticate_google(disable_ssl_verify=False):
                         else:
                             # User hasn't pasted the URL yet
                             return None, "awaiting_auth"
-                    else:
-                        # Web client - just wait for OAuth callback
+                    elif not creds:
+                        # Web client - just wait for OAuth callback (only if we don't have creds yet)
                         st.info("⏳ Waiting for you to authorize via the link above...")
                         return None, "awaiting_auth"
                 else:
