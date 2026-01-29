@@ -954,6 +954,24 @@ def main():
     with st.spinner("Loading calendars..."):
         calendars, error = get_calendars(st.session_state.service)
 
+        # Handle SSL connection errors - recreate service if needed
+        if error and ("SSL" in error or "ssl" in error.lower()):
+            st.warning("⚠️ Connection error detected. Reconnecting...")
+            # Clear the corrupted service
+            st.session_state.service = None
+            # Recreate service with fresh connection
+            ssl_bypass_needed = is_running_on_cloud() or st.session_state.disable_ssl_verify
+            new_service, status = authenticate_google(disable_ssl_verify=ssl_bypass_needed)
+            if status == "success":
+                st.session_state.service = new_service
+                # Retry getting calendars with fresh service
+                calendars, error = get_calendars(st.session_state.service)
+                if not error:
+                    st.success("✅ Reconnected successfully!")
+            else:
+                st.error(f"Failed to reconnect: {status}")
+                st.stop()
+
     if error:
         st.error(error)
         st.stop()
@@ -1171,21 +1189,7 @@ End:   {end_datetime.isoformat()}Z (UTC)
         st.stop()
 
     # Section F: Export Settings
-    st.header("💾 Step 5: Export Settings")
-
-    # Use saved filename template
-    saved_template = st.session_state.settings.get('csv_filename_template', 'calendar_export_{date}.csv')
-    default_filename = saved_template.replace('{date}', datetime.now().strftime('%Y-%m-%d'))
-
-    csv_filename = st.text_input(
-        "CSV Filename",
-        value=default_filename,
-        help="Enter the desired filename for the CSV export"
-    )
-
-    # Ensure .csv extension
-    if not csv_filename.endswith('.csv'):
-        csv_filename += '.csv'
+    st.header("💾 Step 5: Export")
 
     # Export button
     if st.button("📥 Export to CSV", type="primary"):
@@ -1210,6 +1214,22 @@ End:   {end_datetime.isoformat()}Z (UTC)
             # Preview
             st.subheader("Preview (first 10 rows)")
             st.dataframe(df.head(10), use_container_width=True)
+
+            # Filename input - shown AFTER export success
+            st.subheader("Download")
+            saved_template = st.session_state.settings.get('csv_filename_template', 'calendar_export_{date}.csv')
+            default_filename = saved_template.replace('{date}', datetime.now().strftime('%Y-%m-%d'))
+
+            csv_filename = st.text_input(
+                "CSV Filename",
+                value=default_filename,
+                help="Enter the desired filename for the CSV export",
+                key="download_filename"
+            )
+
+            # Ensure .csv extension
+            if not csv_filename.endswith('.csv'):
+                csv_filename += '.csv'
 
             # Download button
             csv_data = df.to_csv(index=False)
