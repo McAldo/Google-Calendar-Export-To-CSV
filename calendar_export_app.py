@@ -572,6 +572,11 @@ def get_calendars(service):
         return calendars, None
     except HttpError as e:
         return None, f"Error fetching calendars: {str(e)}"
+    except Exception as e:
+        # Catch all other exceptions including SSL errors
+        # Include error type in message for SSL detection
+        error_msg = f"{type(e).__name__}: {str(e)}"
+        return None, error_msg
 
 
 def get_calendar_events(service, calendar_ids, start_datetime, end_datetime, selected_colors):
@@ -629,6 +634,10 @@ def get_calendar_events(service, calendar_ids, start_datetime, end_datetime, sel
 
         except HttpError as e:
             st.warning(f"Error fetching events from calendar {calendar_id}: {str(e)}")
+            continue
+        except Exception as e:
+            # Catch all other exceptions including SSL errors
+            st.warning(f"⚠️ Connection error fetching events from calendar {calendar_id}: {type(e).__name__}: {str(e)}")
             continue
 
     return all_events
