@@ -1290,19 +1290,6 @@ End:   {end_datetime.isoformat()}Z (UTC)
         st.write(f"- Selected calendars: {len(export_data['selected_calendar_ids'])}")
         st.write(f"- Selected colours: {', '.join(export_data['selected_colors'])}")
 
-            # Debug: Show date range of fetched events
-            if events:
-                event_dates = []
-                for event in events:
-                    start = event.get('start', {})
-                    event_date_str = start.get('dateTime', start.get('date', ''))
-                    if event_date_str:
-                        event_dates.append(event_date_str)
-
-                if event_dates:
-                    st.write(f"- Earliest event: {event_dates[0]}")
-                    st.write(f"- Latest event: {event_dates[-1]}")
-
     # Save settings to file if changed
     if st.session_state.settings_changed:
         save_settings(st.session_state.settings)
