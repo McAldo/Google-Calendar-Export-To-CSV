@@ -1200,8 +1200,20 @@ End:   {end_datetime.isoformat()}Z (UTC)
     # Section F: Export Settings
     st.header("💾 Step 5: Export")
 
-    # Export button
-    if st.button("📥 Export to CSV", type="primary"):
+    # Show both Export and Clear buttons in columns if export data exists
+    if 'export_data' in st.session_state:
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            export_clicked = st.button("📥 Export to CSV", type="primary")
+        with col2:
+            if st.button("🔄 New Export"):
+                del st.session_state.export_data
+                st.rerun()
+    else:
+        export_clicked = st.button("📥 Export to CSV", type="primary")
+
+    # Handle export button click
+    if export_clicked:
         with st.spinner("Fetching events..."):
             events = get_calendar_events(
                 st.session_state.service,
@@ -1213,49 +1225,70 @@ End:   {end_datetime.isoformat()}Z (UTC)
 
         if not events:
             st.warning("No events found matching your criteria.")
+            # Clear any previous export data
+            if 'export_data' in st.session_state:
+                del st.session_state.export_data
         else:
             # Generate CSV
             df = generate_csv(events, current_color_type_mapping)
 
-            # Section G: Results/Download
-            st.success(f"✅ Found {len(events)} event(s)")
+            # Store export data in session state so it persists across reruns
+            st.session_state.export_data = {
+                'df': df,
+                'events': events,
+                'start_datetime': start_datetime,
+                'end_datetime': end_datetime,
+                'selected_calendar_ids': selected_calendar_ids,
+                'selected_colors': selected_colors,
+                'timestamp': datetime.now().strftime('%Y-%m-%d')
+            }
 
-            # Preview
-            st.subheader("Preview (first 10 rows)")
-            st.dataframe(df.head(10), use_container_width=True)
+    # Display export results if we have data in session state
+    # This persists across reruns (e.g., when user changes filename)
+    if 'export_data' in st.session_state:
+        export_data = st.session_state.export_data
+        df = export_data['df']
+        events = export_data['events']
 
-            # Filename input - shown AFTER export success
-            st.subheader("Download")
-            saved_template = st.session_state.settings.get('csv_filename_template', 'calendar_export_{date}.csv')
-            default_filename = saved_template.replace('{date}', datetime.now().strftime('%Y-%m-%d'))
+        # Section G: Results/Download
+        st.success(f"✅ Found {len(events)} event(s)")
 
-            csv_filename = st.text_input(
-                "CSV Filename",
-                value=default_filename,
-                help="Enter the desired filename for the CSV export",
-                key="download_filename"
-            )
+        # Preview
+        st.subheader("Preview (first 10 rows)")
+        st.dataframe(df.head(10), use_container_width=True)
 
-            # Ensure .csv extension
-            if not csv_filename.endswith('.csv'):
-                csv_filename += '.csv'
+        # Filename input - shown AFTER export success
+        st.subheader("Download")
+        saved_template = st.session_state.settings.get('csv_filename_template', 'calendar_export_{date}.csv')
+        default_filename = saved_template.replace('{date}', export_data['timestamp'])
 
-            # Download button
-            csv_data = df.to_csv(index=False)
-            st.download_button(
-                label="⬇️ Download CSV",
-                data=csv_data,
-                file_name=csv_filename,
-                mime="text/csv",
-                type="primary"
-            )
+        csv_filename = st.text_input(
+            "CSV Filename",
+            value=default_filename,
+            help="Enter the desired filename for the CSV export",
+            key="download_filename"
+        )
 
-            # Show full statistics
-            st.subheader("Export Statistics")
-            st.write(f"- Total events: {len(events)}")
-            st.write(f"- Date range: {start_datetime.strftime('%d/%m/%Y %H:%M')} to {end_datetime.strftime('%d/%m/%Y %H:%M')}")
-            st.write(f"- Selected calendars: {len(selected_calendar_ids)}")
-            st.write(f"- Selected colours: {', '.join(selected_colors)}")
+        # Ensure .csv extension
+        if not csv_filename.endswith('.csv'):
+            csv_filename += '.csv'
+
+        # Download button
+        csv_data = df.to_csv(index=False)
+        st.download_button(
+            label="⬇️ Download CSV",
+            data=csv_data,
+            file_name=csv_filename,
+            mime="text/csv",
+            type="primary"
+        )
+
+        # Show full statistics
+        st.subheader("Export Statistics")
+        st.write(f"- Total events: {len(events)}")
+        st.write(f"- Date range: {export_data['start_datetime'].strftime('%d/%m/%Y %H:%M')} to {export_data['end_datetime'].strftime('%d/%m/%Y %H:%M')}")
+        st.write(f"- Selected calendars: {len(export_data['selected_calendar_ids'])}")
+        st.write(f"- Selected colours: {', '.join(export_data['selected_colors'])}")
 
             # Debug: Show date range of fetched events
             if events:
