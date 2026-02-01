@@ -10,7 +10,7 @@ import os
 import json
 import ssl
 import certifi
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import pandas as pd
 
@@ -1089,7 +1089,7 @@ End:   {end_datetime.isoformat()}Z (UTC)
 
         st.markdown("**Current System Time:**")
         st.write(f"Local time: {datetime.now()}")
-        st.write(f"UTC time: {datetime.utcnow()}")
+        st.write(f"UTC time: {datetime.now(timezone.utc)}")
 
         st.markdown("**Cache Control:**")
         col1, col2 = st.columns(2)
@@ -1139,6 +1139,16 @@ End:   {end_datetime.isoformat()}Z (UTC)
     saved_color_selections = st.session_state.settings.get('color_selections', {color: True for color in COLOR_NAMES})
     saved_color_type_mapping = st.session_state.settings.get('color_type_mapping', {})
 
+    # Initialize checkbox keys in session_state ONCE (only if not already set)
+    for color_name in COLOR_NAMES:
+        checkbox_key = f"color_checkbox_{color_name}"
+        if checkbox_key not in st.session_state:
+            st.session_state[checkbox_key] = saved_color_selections.get(color_name, True)
+
+        type_key = f"type_{color_name}"
+        if type_key not in st.session_state:
+            st.session_state[type_key] = saved_color_type_mapping.get(color_name, "")
+
     # Track current selections and mappings
     current_color_selections = {}
     current_color_type_mapping = {}
@@ -1163,31 +1173,31 @@ End:   {end_datetime.isoformat()}Z (UTC)
                             )
 
                         with subcol2:
-                            # Checkbox to include color
+                            # Checkbox to include color - use key only, no value param
                             include = st.checkbox(
                                 color_name,
-                                value=saved_color_selections.get(color_name, True),
                                 key=f"color_checkbox_{color_name}"
                             )
                             current_color_selections[color_name] = include
 
                         with subcol3:
-                            # Type label input
+                            # Type label input - use key only, no value param
                             type_label = st.text_input(
                                 "Type",
-                                value=saved_color_type_mapping.get(color_name, ""),
                                 key=f"type_{color_name}",
                                 label_visibility="collapsed",
                                 placeholder="e.g., positive"
                             )
                             current_color_type_mapping[color_name] = type_label
 
-    # Save color selections and type mappings if changed
-    if current_color_selections != st.session_state.settings.get('color_selections', {}):
+    # Save color selections and type mappings if changed (use same default as above)
+    default_selections = {color: True for color in COLOR_NAMES}
+    if current_color_selections != st.session_state.settings.get('color_selections', default_selections):
         st.session_state.settings['color_selections'] = current_color_selections
         st.session_state.settings_changed = True
 
-    if current_color_type_mapping != st.session_state.settings.get('color_type_mapping', {}):
+    default_mappings = {}
+    if current_color_type_mapping != st.session_state.settings.get('color_type_mapping', default_mappings):
         st.session_state.settings['color_type_mapping'] = current_color_type_mapping
         st.session_state.settings_changed = True
 
