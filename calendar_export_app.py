@@ -735,14 +735,14 @@ def generate_csv(events, color_type_mapping):
         event_type = color_type_mapping.get(color_name, "")
 
         row = {
+            'Type': event_type,
             'Event Name': event.get('summary', '(No title)'),
             'Event Description': event.get('description', ''),
+            'Duration': calculate_duration(start, end),
             'Start DateTime': format_uk_datetime(start.get('dateTime', start.get('date'))),
             'End DateTime': format_uk_datetime(end.get('dateTime', end.get('date'))),
-            'Duration': calculate_duration(start, end),
             'Created DateTime': format_uk_datetime(event.get('created', '')),
-            'Colour': color_name,
-            'Type': event_type
+            'Colour': color_name
         }
 
         rows.append(row)
