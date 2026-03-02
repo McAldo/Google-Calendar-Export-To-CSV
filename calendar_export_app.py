@@ -9,6 +9,8 @@ import streamlit as st
 import os
 import json
 import ssl
+import base64
+import urllib.parse
 import certifi
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -339,20 +341,37 @@ def authenticate_google(disable_ssl_verify=False):
                                 redirect_uri = creds_data['web']['redirect_uris'][0]
                                 st.write(f"✓ Using redirect_uri: {redirect_uri}")
 
-                                flow = Flow.from_client_secrets_file(
-                                    'credentials.json',
-                                    scopes=SCOPES,
-                                    redirect_uri=redirect_uri
-                                )
-                                # Set the state from the callback for CSRF validation
+                                # Decode state param - may contain embedded code_verifier
+                                recovered_code_verifier = None
+                                original_state = None
                                 if 'state' in query_params:
                                     state_param = query_params['state']
                                     if isinstance(state_param, (list, tuple)):
-                                        state_value = state_param[0]
+                                        state_raw = state_param[0]
                                     else:
-                                        state_value = str(state_param)
-                                    flow._state = state_value
-                                    st.write(f"✓ Set state from callback: {state_value[:10]}...")
+                                        state_raw = str(state_param)
+                                    try:
+                                        decoded = json.loads(
+                                            base64.urlsafe_b64decode(
+                                                state_raw + '=='
+                                            )
+                                        )
+                                        original_state = decoded['s']
+                                        recovered_code_verifier = decoded.get('v')
+                                        st.write(f"✓ Recovered code_verifier from state")
+                                    except (json.JSONDecodeError, KeyError, Exception):
+                                        original_state = state_raw
+
+                                flow = Flow.from_client_secrets_file(
+                                    'credentials.json',
+                                    scopes=SCOPES,
+                                    redirect_uri=redirect_uri,
+                                    code_verifier=recovered_code_verifier
+                                )
+                                # Set the state for CSRF validation
+                                if original_state:
+                                    flow._state = original_state
+                                    st.write(f"✓ Set state from callback: {original_state[:10]}...")
 
                             # Fetch token using the authorization code
                             # Streamlit query_params can return values directly or as lists depending on version
@@ -421,6 +440,31 @@ def authenticate_google(disable_ssl_verify=False):
                             prompt='consent',
                             access_type='offline'
                         )
+
+                        # Persist code_verifier in state param so it survives
+                        # the redirect (Streamlit Cloud loses session state)
+                        code_verifier = getattr(flow, 'code_verifier', None)
+                        if code_verifier is None:
+                            code_verifier = getattr(
+                                flow.oauth2session, '_code_verifier', None
+                            )
+                        if code_verifier:
+                            combined = base64.urlsafe_b64encode(
+                                json.dumps({
+                                    's': state,
+                                    'v': code_verifier
+                                }).encode()
+                            ).decode()
+                            parsed = urllib.parse.urlparse(auth_url)
+                            params = urllib.parse.parse_qs(parsed.query)
+                            params['state'] = [combined]
+                            new_query = urllib.parse.urlencode(
+                                params, doseq=True
+                            )
+                            auth_url = urllib.parse.urlunparse(
+                                parsed._replace(query=new_query)
+                            )
+
                         st.session_state.oauth_flow = flow
                         st.session_state.auth_url = auth_url
                         st.session_state.redirect_uri = redirect_uri
