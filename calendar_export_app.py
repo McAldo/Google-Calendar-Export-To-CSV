@@ -23,7 +23,6 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from googleapiclient.http import MediaIoBaseUpload
 import httplib2
 from google_auth_httplib2 import AuthorizedHttp
 
@@ -670,6 +669,7 @@ def save_settings_to_drive(drive_service, settings):
     if drive_service is None:
         return False
     try:
+        from googleapiclient.http import MediaIoBaseUpload
         data = json.dumps(settings, indent=2).encode('utf-8')
         media = MediaIoBaseUpload(io.BytesIO(data), mimetype='application/json')
 
