@@ -7,6 +7,7 @@ Includes SSL verification bypass option for Windows compatibility issues.
 
 import streamlit as st
 import os
+import io
 import json
 import ssl
 import base64
@@ -22,6 +23,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from googleapiclient.http import MediaIoBaseUpload
 import httplib2
 from google_auth_httplib2 import AuthorizedHttp
 
@@ -32,8 +34,14 @@ os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 # Global flag for SSL bypass
 _ssl_bypass_enabled = False
 
-# Google Calendar API scope (readonly)
-SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
+# Google Calendar API scope (readonly) + Drive appdata for settings persistence
+SCOPES = [
+    'https://www.googleapis.com/auth/calendar.readonly',
+    'https://www.googleapis.com/auth/drive.appdata',
+]
+
+# Drive settings file name (stored in hidden appDataFolder)
+DRIVE_SETTINGS_FILENAME = 'calendar_export_settings.json'
 
 # Settings file for persistence
 SETTINGS_FILE = 'app_settings.json'
@@ -272,7 +280,7 @@ def get_streamlit_app_url():
 def authenticate_google(disable_ssl_verify=False):
     """
     Authenticate with Google Calendar API using OAuth 2.0.
-    Returns the service object for API calls.
+    Returns (service, authorized_http, status) tuple.
 
     Args:
         disable_ssl_verify: If True, bypasses SSL verification (INSECURE - diagnostics only!)
@@ -297,7 +305,7 @@ def authenticate_google(disable_ssl_verify=False):
 
         if not creds:
             if not os.path.exists('credentials.json'):
-                return None, "credentials_missing"
+                return None, None, "credentials_missing"
 
             try:
                 # Determine OAuth client type
@@ -406,7 +414,7 @@ def authenticate_google(disable_ssl_verify=False):
                             if 'oauth_flow' in st.session_state:
                                 del st.session_state.oauth_flow
                             st.query_params.clear()
-                            return None, f"auth_error: {str(e)}"
+                            return None, None, f"auth_error: {str(e)}"
 
                     # Only show auth UI if we haven't just processed a callback
                     # If creds is set from callback above, skip this entire section
@@ -561,14 +569,14 @@ def authenticate_google(disable_ssl_verify=False):
                                     if 'auth_url' in st.session_state:
                                         del st.session_state.auth_url
                                     st.rerun()
-                                return None, f"auth_error: {str(e)}"
+                                return None, None, f"auth_error: {str(e)}"
                         else:
                             # User hasn't pasted the URL yet
-                            return None, "awaiting_auth"
+                            return None, None, "awaiting_auth"
                     elif not creds:
                         # Web client - just wait for OAuth callback (only if we don't have creds yet)
                         st.info("⏳ Waiting for you to authorize via the link above...")
-                        return None, "awaiting_auth"
+                        return None, None, "awaiting_auth"
                 else:
                     # Local environment - use browser-based flow
                     flow = InstalledAppFlow.from_client_secrets_file(
@@ -576,7 +584,7 @@ def authenticate_google(disable_ssl_verify=False):
                     creds = flow.run_local_server(port=0)
 
             except Exception as e:
-                return None, f"auth_error: {str(e)}"
+                return None, None, f"auth_error: {str(e)}"
 
         # Save credentials for next run
         if creds:
@@ -592,9 +600,116 @@ def authenticate_google(disable_ssl_verify=False):
 
         # Build service with authorized HTTP client
         service = build('calendar', 'v3', http=authorized_http)
-        return service, "success"
+        return service, authorized_http, "success"
     except Exception as e:
-        return None, f"service_error: {str(e)}"
+        return None, None, f"service_error: {str(e)}"
+
+
+def get_drive_service(authorized_http):
+    """
+    Build a Google Drive v3 service from existing authorized HTTP client.
+    Returns the Drive service or None on error.
+    """
+    if authorized_http is None:
+        return None
+    try:
+        return build('drive', 'v3', http=authorized_http)
+    except Exception as e:
+        st.warning(f"Could not connect to Google Drive: {e}")
+        return None
+
+
+def _find_settings_file_in_drive(drive_service):
+    """
+    Search the hidden appDataFolder for the settings file.
+    Returns the file ID or None.
+    """
+    if drive_service is None:
+        return None
+    try:
+        response = drive_service.files().list(
+            spaces='appDataFolder',
+            q=f"name = '{DRIVE_SETTINGS_FILENAME}'",
+            fields='files(id, name)',
+            pageSize=1
+        ).execute()
+        files = response.get('files', [])
+        return files[0]['id'] if files else None
+    except Exception as e:
+        st.warning(f"Could not search Drive for settings: {e}")
+        return None
+
+
+def load_settings_from_drive(drive_service):
+    """
+    Download and parse settings JSON from Google Drive appDataFolder.
+    Returns a settings dict or None if unavailable.
+    """
+    if drive_service is None:
+        return None
+    try:
+        file_id = _find_settings_file_in_drive(drive_service)
+        if file_id is None:
+            return None
+        content = drive_service.files().get_media(fileId=file_id).execute()
+        settings = json.loads(content)
+        return settings
+    except json.JSONDecodeError:
+        st.warning("Settings file in Drive is corrupted. Using defaults.")
+        return None
+    except Exception as e:
+        st.warning(f"Could not load settings from Drive: {e}")
+        return None
+
+
+def save_settings_to_drive(drive_service, settings):
+    """
+    Create or update the settings JSON file in Google Drive appDataFolder.
+    Returns True on success, False on failure.
+    """
+    if drive_service is None:
+        return False
+    try:
+        data = json.dumps(settings, indent=2).encode('utf-8')
+        media = MediaIoBaseUpload(io.BytesIO(data), mimetype='application/json')
+
+        file_id = _find_settings_file_in_drive(drive_service)
+        if file_id:
+            drive_service.files().update(
+                fileId=file_id,
+                media_body=media
+            ).execute()
+        else:
+            file_metadata = {
+                'name': DRIVE_SETTINGS_FILENAME,
+                'parents': ['appDataFolder']
+            }
+            drive_service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id'
+            ).execute()
+        return True
+    except Exception as e:
+        st.warning(f"Could not save settings to Drive: {e}")
+        return False
+
+
+def delete_settings_from_drive(drive_service):
+    """
+    Delete the settings file from Google Drive appDataFolder.
+    Returns True on success, False on failure.
+    """
+    if drive_service is None:
+        return False
+    try:
+        file_id = _find_settings_file_in_drive(drive_service)
+        if file_id:
+            drive_service.files().delete(fileId=file_id).execute()
+        return True
+    except Exception as e:
+        st.warning(f"Could not delete settings from Drive: {e}")
+        return False
 
 
 def get_calendars(service):
@@ -830,10 +945,11 @@ def main():
            - Click "Select a project" → "New Project"
            - Give it a name (e.g., "Calendar Export") → Click "Create"
 
-        2. **Enable Google Calendar API**
+        2. **Enable Google Calendar API and Google Drive API**
            - In your new project, go to "APIs & Services" → "Library"
-           - Search for "Google Calendar API"
-           - Click on it and press "Enable"
+           - Search for "Google Calendar API" → Click on it and press "Enable"
+           - Go back to the Library, search for "Google Drive API" → Click on it and press "Enable"
+           - (Drive API is used to save your settings so they persist across sessions)
 
         3. **Create OAuth Credentials**
            - Go to "APIs & Services" → "Credentials"
@@ -944,10 +1060,11 @@ def main():
         # Try to authenticate (for cloud, this will show the manual OAuth UI)
         # Auto-enable SSL bypass on cloud (SSL issues with httplib2 on cloud servers)
         ssl_bypass_needed = is_running_on_cloud() or st.session_state.disable_ssl_verify
-        service, status = authenticate_google(disable_ssl_verify=ssl_bypass_needed)
+        service, authorized_http, status = authenticate_google(disable_ssl_verify=ssl_bypass_needed)
 
         if status == "success":
             st.session_state.service = service
+            st.session_state.authorized_http = authorized_http
             st.session_state.authenticated = True
 
             # Get user email from primary calendar
@@ -986,6 +1103,9 @@ def main():
                 st.session_state.authenticated = False
                 st.session_state.service = None
                 st.session_state.user_email = None
+                st.session_state.pop('authorized_http', None)
+                st.session_state.pop('drive_service', None)
+                st.session_state.pop('_drive_settings_loaded', None)
                 st.rerun()
         with col2:
             if st.button("🔒 Test With SSL Enabled"):
@@ -1001,6 +1121,25 @@ def main():
     if not st.session_state.authenticated:
         st.stop()
 
+    # --- Google Drive settings sync (one-time per session) ---
+    if 'drive_service' not in st.session_state:
+        st.session_state.drive_service = get_drive_service(
+            st.session_state.get('authorized_http')
+        )
+
+    if not st.session_state.get('_drive_settings_loaded'):
+        drive_svc = st.session_state.get('drive_service')
+        if drive_svc is not None:
+            drive_settings = load_settings_from_drive(drive_svc)
+            if drive_settings is not None:
+                # Merge Drive settings into current session (Drive takes priority)
+                st.session_state.settings.update(drive_settings)
+                st.session_state.settings_changed = False
+            else:
+                # First time: no settings in Drive yet, migrate local settings
+                save_settings_to_drive(drive_svc, st.session_state.settings)
+        st.session_state._drive_settings_loaded = True
+
     # Section C: Calendar Selection
     st.header("📋 Step 2: Select Calendars")
 
@@ -1014,9 +1153,10 @@ def main():
             st.session_state.service = None
             # Recreate service with fresh connection
             ssl_bypass_needed = is_running_on_cloud() or st.session_state.disable_ssl_verify
-            new_service, status = authenticate_google(disable_ssl_verify=ssl_bypass_needed)
+            new_service, new_authorized_http, status = authenticate_google(disable_ssl_verify=ssl_bypass_needed)
             if status == "success":
                 st.session_state.service = new_service
+                st.session_state.authorized_http = new_authorized_http
                 # Retry getting calendars with fresh service
                 calendars, error = get_calendars(st.session_state.service)
                 if not error:
@@ -1149,8 +1289,10 @@ End:   {end_datetime.isoformat()}Z (UTC)
             if st.button("🗑️ Reset All Settings"):
                 if os.path.exists(SETTINGS_FILE):
                     os.remove(SETTINGS_FILE)
-                    st.success("Settings reset! Page will reload.")
-                    st.rerun()
+                delete_settings_from_drive(st.session_state.get('drive_service'))
+                st.session_state.pop('_drive_settings_loaded', None)
+                st.success("Settings reset! Page will reload.")
+                st.rerun()
 
     # Section E: Colour Filter & Type Mapping
     st.header("🎨 Step 4: Colour Filter & Type Mapping")
@@ -1344,9 +1486,12 @@ End:   {end_datetime.isoformat()}Z (UTC)
         st.write(f"- Selected calendars: {len(export_data['selected_calendar_ids'])}")
         st.write(f"- Selected colours: {', '.join(export_data['selected_colors'])}")
 
-    # Save settings to file if changed
+    # Save settings to file (and Drive) if changed
     if st.session_state.settings_changed:
         save_settings(st.session_state.settings)
+        save_settings_to_drive(
+            st.session_state.get('drive_service'), st.session_state.settings
+        )
         st.session_state.settings_changed = False
 
 
